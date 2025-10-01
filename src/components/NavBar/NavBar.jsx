@@ -5,7 +5,7 @@ export default function NavBar() {
     const {user, loading, logout} = useAuth();
 
     return (
-        <nav style={{padding: "12px 16px", borderBottom: "1px solid #eee", display: "flex", gap: 12}}>
+        <nav style={{borderBottom: "1px solid #eee", display: "flex", gap: 12}}>
             <Link to="/">홈</Link>
             <div style={{marginLeft: "auto", display: "flex", gap: 12, alignItems: "center"}}>
                 {loading ? (
