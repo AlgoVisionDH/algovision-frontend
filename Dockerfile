@@ -4,7 +4,7 @@ WORKDIR /app
 
 # 의존성 캐시 최적화
 COPY package*.json ./
-RUN npm ci --ignore-scripts
+RUN npm ci
 
 COPY . .
 
@@ -17,9 +17,11 @@ RUN npm run build
 
 FROM nginx:1.27-alpine
 
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+RUN apk add --no-cache curl
 
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/dist /usr/share/nginx/html
 
 EXPOSE 80
-HEALTHCHECK CMD curl -fsS http://localhost:80/ || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -fsS http://localhost:80/ || exit 1
