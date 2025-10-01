@@ -1,24 +1,28 @@
 name: Build & Push vite App to GHCR
+
 on:
   push:
-     branches: ["main"]
-     tags: ["v*", "release-*"]
+    branches: ["main"]
+    tags: ["v*", "release-*"]
   workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: frontend-prod
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{github.repository}}
-  VITE_API_BASE: ${{vars.VITE_API_BASE || 'https://algovision.co.kr'}}
-  VITE_BASE: ${{vars.VITE_BASE || '/' }}
+  IMAGE_NAME: ${{ github.repository }}
+  VITE_API_BASE: ${{ vars.VITE_API_BASE || 'https://algovision.co.kr' }}
+  VITE_BASE: ${{ vars.VITE_BASE || '/' }}
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,6 +49,8 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha
             type=ref,event=tag
+            # ← 긴 SHA 태그도 함께 푸시(배포에서 sha-${{ github.sha }} 사용)
+            type=raw,value=sha-${{ github.sha }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -54,7 +60,7 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64, linux/arm64       # 필요 시 "linux/amd64,linux/arm64"
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -69,12 +75,6 @@ jobs:
     needs: build-and-push
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
 
-    env:
-      IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-      SHA_TAG: sha-${{ github.sha }}
-      # 서버에 있는 compose 파일 경로
-      REMOTE_DIR: /home/ubuntu/docker/frontend
-
     steps:
       - name: SSH | Login GHCR & deploy
         uses: appleboy/ssh-action@v1.2.0
@@ -85,20 +85,27 @@ jobs:
           script: |
             set -euo pipefail
 
-            # GHCR 로그인 (서버에서 pull 용). 퍼블릭이면 생략 가능.
-            echo ${{ secrets.GHCR_READ_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            # ===== 사용자 변수 (원격 셸에서 직접 정의) =====
+            IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+            SHA_TAG="sha-${{ github.sha }}"
+            REMOTE_DIR="/home/ubuntu/docker/frontend"
+            COMPOSE_FILE="compose.yml"   # 서버 파일명이 compose.yml이라면 이렇게. compose.yaml이면 그걸로 변경.
 
-            cd $REMOTE_DIR
+            # (Private 레포면 필요) GHCR 로그인. Public이면 실패 무시해도 OK.
+            echo "${{ secrets.GHCR_READ_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin || true
+
+            cd "$REMOTE_DIR"
 
             # compose 파일의 이미지 태그를 현재 SHA로 교체
-            sed -i "s#ghcr.io/.*/.*:sha-.*#${IMAGE}:${SHA_TAG}#g" compose.yaml
+            # 예: image: ghcr.io/algovisiondh/algovision-frontend:sha-PLACEHOLDER
+            sed -i "s#ghcr.io/.*/.*:sha-.*#${IMAGE}:${SHA_TAG}#g" "$COMPOSE_FILE"
 
-            # 최신 이미지 풀 & 재기동 (건강상태 대기)
-            docker compose pull
-            docker compose up -d --wait
+            # 최신 이미지 pull & 재기동 (헬스체크 대기)
+            docker compose -f "$COMPOSE_FILE" pull
+            docker compose -f "$COMPOSE_FILE" up -d --wait
 
-            # 스모크 테스트
+            # 스모크 테스트 (포트 5173 매핑 기준)
             curl -fsS http://localhost:5173/ > /dev/null
 
-            # 정리(선택): 오래된 dangling 이미지 삭제
+            # 오래된 dangling 이미지 정리(선택)
             docker image prune -f
